@@ -14,15 +14,13 @@ import (
 )
 
 const usage = "Usage: %s [OPTIONS...] UPPERBOUND\n" +
-    "Calculates the number of prime numbers from [2, UPPERBOUND] using the sieve of Eratosthenes.\n" + 
+	"Calculates the number of prime numbers from [2, UPPERBOUND] using the sieve of Eratosthenes.\n" +
 	"UPPERBOUND must be at least 10\n" +
-    "\nOptions:\n" +
-    "-o    write primes to JSON FILE\n" +
-    "-t    number of threads used (default 2)\n"
+	"\nOptions:\n" +
+	"-o    write primes to JSON FILE\n" +
+	"-t    number of threads used (default 2)\n"
 
-const (
-	chunk    = 1 << 17
-)
+const chunk = 1 << 17
 
 var nThreads int
 
@@ -35,38 +33,80 @@ type Iterator struct {
 	idx   int
 }
 
-func NewWheel(max int) *Iterator {
-	it := new(Iterator)
-	if max < 0 {
-		return it
+func (iter *Iterator) setStart(start int) {
+	if start < 7 {
+		iter.curr = 1
+		return
 	}
 
-	it.alive = true
-	it.max = max
-	it.curr = 1
-	return it
+	mod := start % 30
+	iter.curr = start - mod
+	if mod <= 2 {
+		iter.curr += 1
+		iter.idx = 0
+
+	} else if mod <= 10 {
+		iter.curr += 7
+		iter.idx = 1
+
+	} else if mod <= 12 {
+		iter.curr += 11
+		iter.idx = 2
+
+	} else if mod <= 16 {
+		iter.curr += 13
+		iter.idx = 3
+
+	} else if mod <= 18 {
+		iter.curr += 17
+		iter.idx = 4
+
+	} else if mod <= 22 {
+		iter.curr += 19
+		iter.idx = 5
+
+	} else if mod <= 28 {
+		iter.curr += 23
+		iter.idx = 6
+
+	} else {
+		iter.curr += 29
+		iter.idx = 7
+	}
 }
 
-func (it *Iterator) Next() bool {
-	if !it.alive {
+func NewWheel(start, max int) *Iterator {
+	iter := new(Iterator)
+	iter.alive = true
+	if max <= 0 {
+		iter.max = 0
+	} else {
+		iter.max = max
+	}
+	iter.setStart(start)
+	return iter
+}
+
+func (iter *Iterator) Next() bool {
+	if !iter.alive {
 		return false
 	}
 
-	it.curr += wheel[it.idx]
-	it.idx = (it.idx + 1) % len(wheel)
-	if it.curr > it.max {
-		it.alive = false
+	iter.curr += wheel[iter.idx]
+	iter.idx = (iter.idx + 1) % len(wheel)
+	if iter.max > 0 && iter.curr >= iter.max {
+		iter.alive = false
 	}
 
-	return it.alive
+	return iter.alive
 }
 
-func (it *Iterator) Curr() int {
-	if !it.alive {
+func (iter *Iterator) Curr() int {
+	if !iter.alive {
 		return 0
 	}
 
-	return it.curr
+	return iter.curr
 }
 
 func primeEstimative(upperbound int) int {
@@ -98,29 +138,29 @@ func sieveThread(sieve []bool, primes []int, start int, end int) {
 }
 
 func sieve(upperbound int) []bool {
-	sieve := make([]bool, int(upperbound+2))
+	sieve := make([]bool, upperbound+1)
 	upperboundSqrt := int(math.Sqrt(float64(upperbound)))
 	primes := make([]int, 0, primeEstimative(upperboundSqrt))
-	upperbound++
-	it := NewWheel(upperboundSqrt)
-	for it.Next() {
-		i := it.Curr()
+	iter := NewWheel(1, upperboundSqrt+1)
+	for iter.Next() {
+		i := iter.Curr()
 		if sieve[i] {
 			continue
 		}
 		primes = append(primes, i)
-		for j := i * i; j < upperboundSqrt; j += i {
+		for j := i * i; j <= upperboundSqrt; j += i {
 			sieve[j] = true
 		}
 	}
 
 	var wg sync.WaitGroup
 	threadChunk := (upperbound - upperboundSqrt) / nThreads
-	for i := upperboundSqrt; i < upperbound; i += threadChunk {
-		start := i
+	upperboundSqrt++
+	for i := 0; i < nThreads; i++ {
+		start := (threadChunk * i) + upperboundSqrt
 		end := start + threadChunk
-		if end > upperbound {
-			end = upperbound
+		if i == nThreads-1 {
+			end += (upperbound - upperboundSqrt) % nThreads
 		}
 
 		wg.Add(1)
@@ -133,33 +173,63 @@ func sieve(upperbound int) []bool {
 	return sieve
 }
 
-func writeFile(sieve []bool, upperbound int, file *os.File) int {
-	var writer *bufio.Writer
-	if file != nil {
-		writer = bufio.NewWriter(file)
-		writer.WriteString("[2, 3, 5")
+func count(sieve []bool) int {
+	var wg sync.WaitGroup
+	sums := make([]int, nThreads)
+	upperbound := len(sieve) - 1
+	threadChunk := upperbound / nThreads
+	for i := 0; i < nThreads; i++ {
+		i := i
+		start := threadChunk * i
+		end := start + threadChunk
+		if i == nThreads-1 {
+			end += (upperbound % nThreads) + 1
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			iter := NewWheel(start, end)
+			for iter.Next() {
+				if sieve[iter.Curr()] {
+					continue
+				}
+				sums[i]++
+			}
+		}()
 	}
+	wg.Wait()
+	sum := 3
+	for _, v := range sums {
+		sum += v
+	}
+	return sum
+}
 
-	count := 3
-	it := NewWheel(upperbound)
-	for it.Next() {
-		i := it.Curr()
+func writeFile(sieve []bool, filename string) {
+	file, err := os.OpenFile(
+		filename,
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+		0644,
+	)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	var writer *bufio.Writer
+	writer = bufio.NewWriter(file)
+	writer.WriteString("[2, 3, 5")
+	iter := NewWheel(0, len(sieve))
+	for iter.Next() {
+		i := iter.Curr()
 		if sieve[i] {
 			continue
 		}
-
-		count++
-		if file != nil {
-			writer.WriteString(", " + strconv.Itoa(i))
-		}
+		writer.WriteString(", " + strconv.Itoa(i))
 	}
 
-	if file != nil {
-		writer.WriteString("]")
-		writer.Flush()
-	}
-
-	return count
+	writer.WriteString("]")
+	writer.Flush()
 }
 
 func main() {
@@ -175,7 +245,7 @@ func main() {
 
 	var outFlag string
 	flag.StringVar(&outFlag, "o", "", "write primes to JSON FILE")
-    flag.IntVar(&nThreads, "t", 2, "number of threads used")
+	flag.IntVar(&nThreads, "t", 2, "number of threads used")
 	flag.Parse()
 	if flag.NArg() > 1 {
 		log.Fatalf("Too many arguments!\nUpper bound must be specified after flags")
@@ -194,19 +264,13 @@ func main() {
 		log.Fatalln("Upper bound must be at least 10")
 	}
 
-	var file *os.File
-	if outFlag != "" {
-		file, err = os.OpenFile(outFlag, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		defer file.Close()
-	}
-
 	start := time.Now()
 	sieve := sieve(upperbound)
 	elapsed := time.Since(start)
 	fmt.Printf("Time to make sieve: %v\n", elapsed)
-	count := writeFile(sieve, upperbound, file)
+	count := count(sieve)
 	fmt.Printf("Primes between 1 and %d: %d\n", upperbound, count)
+	if outFlag != "" {
+		writeFile(sieve, outFlag)
+	}
 }
