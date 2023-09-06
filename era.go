@@ -1,31 +1,19 @@
-package main
+package era
 
 import (
 	"bufio"
-	"flag"
-	"fmt"
-	"log"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
-	"time"
 )
-
-const usage = "Usage: %s [OPTIONS...] UPPERBOUND\n" +
-	"Calculates the number of prime numbers from [2, UPPERBOUND] using the sieve of Eratosthenes.\n" +
-	"UPPERBOUND must be at least 10\n" +
-	"\nOptions:\n" +
-	"-o    write primes to JSON FILE\n" +
-	"-t    number of threads used (default 2)\n"
 
 const chunk = 1 << 17
 
-var nThreads int
-
 var wheel = []int{6, 4, 2, 4, 2, 4, 6, 2}
 
+// Iterator iterates through the sequence of numbers that
+// are not multiple of 2, 3 and 5.
 type Iterator struct {
 	alive bool
 	max   int
@@ -34,7 +22,7 @@ type Iterator struct {
 }
 
 func (iter *Iterator) setStart(start int) {
-	if start < 7 {
+	if start <= 7 {
 		iter.curr = 1
 		return
 	}
@@ -75,7 +63,11 @@ func (iter *Iterator) setStart(start int) {
 	}
 }
 
-func NewWheel(start, max int) *Iterator {
+// NewWheel returns a new iterator.
+// If start is not in the iterator's sequence the next number will be
+// the subsequent value in the sequence.
+// The range of the iterator is [start, max)
+func NewWheel(start int, max int) *Iterator {
 	iter := new(Iterator)
 	iter.alive = true
 	if max <= 0 {
@@ -87,6 +79,7 @@ func NewWheel(start, max int) *Iterator {
 	return iter
 }
 
+// Next advances the iterator's sequence and returns if there is a number available
 func (iter *Iterator) Next() bool {
 	if !iter.alive {
 		return false
@@ -101,6 +94,8 @@ func (iter *Iterator) Next() bool {
 	return iter.alive
 }
 
+// Curr returns the current number in the iterator's sequency.
+// If Next returned false, the number will be always zero.
 func (iter *Iterator) Curr() int {
 	if !iter.alive {
 		return 0
@@ -137,7 +132,14 @@ func sieveThread(sieve []bool, primes []int, start int, end int) {
 	}
 }
 
-func sieve(upperbound int) []bool {
+// Sieve returns a bool slice in which the slice index represents the
+// corresponding number.
+// True values indicate if the number is composite.
+//
+// Note: Not all composite numbers may be properly marked. To get the total
+// number of primes between zero and the upper bound it is needed to make a
+// call to Count.
+func Sieve(upperbound int, nThreads int) []bool {
 	sieve := make([]bool, upperbound+1)
 	upperboundSqrt := int(math.Sqrt(float64(upperbound)))
 	primes := make([]int, 0, primeEstimative(upperboundSqrt))
@@ -173,7 +175,8 @@ func sieve(upperbound int) []bool {
 	return sieve
 }
 
-func count(sieve []bool) int {
+// Count counts the number of primes in sieve using at most nThreads.
+func Count(sieve []bool, nThreads int) int {
 	var wg sync.WaitGroup
 	sums := make([]int, nThreads)
 	upperbound := len(sieve) - 1
@@ -205,14 +208,15 @@ func count(sieve []bool) int {
 	return sum
 }
 
-func writeFile(sieve []bool, filename string) {
+// WriteFile writes all the primes in sieve to the file filename.
+func WriteFile(sieve []bool, filename string) error {
 	file, err := os.OpenFile(
 		filename,
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
 		0644,
 	)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
 	defer file.Close()
 
@@ -229,48 +233,5 @@ func writeFile(sieve []bool, filename string) {
 	}
 
 	writer.WriteString("]")
-	writer.Flush()
-}
-
-func main() {
-	log.SetFlags(0)
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, usage, filepath.Base(os.Args[0]))
-	}
-
-	if len(os.Args) < 2 {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	var outFlag string
-	flag.StringVar(&outFlag, "o", "", "write primes to JSON FILE")
-	flag.IntVar(&nThreads, "t", 2, "number of threads used")
-	flag.Parse()
-	if flag.NArg() > 1 {
-		log.Fatalf("Too many arguments!\nUpper bound must be specified after flags")
-	}
-
-	upperboundStr := flag.Arg(0)
-	if upperboundStr == "" {
-		log.Fatalln("Upper bound must be specified")
-	}
-
-	upperbound, err := strconv.Atoi(upperboundStr)
-	if err != nil {
-		log.Fatalln("Upper bound must be a number")
-	}
-	if upperbound < 10 {
-		log.Fatalln("Upper bound must be at least 10")
-	}
-
-	start := time.Now()
-	sieve := sieve(upperbound)
-	elapsed := time.Since(start)
-	fmt.Printf("Time to make sieve: %v\n", elapsed)
-	count := count(sieve)
-	fmt.Printf("Primes between 1 and %d: %d\n", upperbound, count)
-	if outFlag != "" {
-		writeFile(sieve, outFlag)
-	}
+	return writer.Flush()
 }
