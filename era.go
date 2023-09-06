@@ -157,7 +157,6 @@ func Sieve(upperbound int, nThreads int) []bool {
 
 	var wg sync.WaitGroup
 	threadChunk := (upperbound - upperboundSqrt) / nThreads
-	upperboundSqrt++
 	for i := 0; i < nThreads; i++ {
 		start := (threadChunk * i) + upperboundSqrt
 		end := start + threadChunk
